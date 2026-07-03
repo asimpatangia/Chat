@@ -39,7 +39,12 @@ interface Props {
   onToggleSidebar: () => void;
 }
 
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+}
+
 function isTextFile(file: File): boolean {
+  if (isPdfFile(file)) return false; // PDFs handled separately
   return TEXT_TYPES.some(t => file.type.startsWith(t)) ||
     /\.(txt|md|csv|json|xml|js|ts|jsx|tsx|py|rb|go|java|c|cpp|h|css|html|yaml|yml|env|sh|sql|log)$/i.test(file.name);
 }
@@ -135,6 +140,7 @@ export default function ChatInterface({
   // ── File handling ────────────────────────────────────────────────────────────
   async function handleFileSelect(file: File) {
     const isText = isTextFile(file);
+    const isPdf = isPdfFile(file);
     let textContent: string | null = null;
     let readError: string | null = null;
 
@@ -147,6 +153,16 @@ export default function ChatInterface({
           : raw;
       } catch {
         readError = 'Could not read file contents';
+      }
+    } else if (isPdf) {
+      try {
+        const { extractPdfText } = await import('@/lib/pdfExtract');
+        const raw = await extractPdfText(file);
+        textContent = raw.length > MAX_FILE_CHARS
+          ? raw.slice(0, MAX_FILE_CHARS) + `\n\n[... truncated at ${MAX_FILE_CHARS} characters ...]`
+          : raw;
+      } catch (err) {
+        readError = err instanceof Error ? err.message : 'Could not extract PDF text';
       }
     }
 
@@ -362,6 +378,8 @@ export default function ChatInterface({
                   <Loader2 size={11} className="animate-spin text-gray-400" />
                 ) : f.type.startsWith('image/') ? (
                   <ImageIcon size={11} />
+                ) : (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')) ? (
+                  <FileText size={11} className="text-red-400" />
                 ) : (
                   <FileText size={11} />
                 )}
