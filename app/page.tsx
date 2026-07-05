@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
 import ChatInterface from '@/components/ChatInterface';
 import SettingsModal from '@/components/SettingsModal';
-import { Conversation, ApiKeys, Provider, ChatMessage } from '@/lib/types';
+import { Conversation, ApiKeys, Provider, ChatMessage, ImagePart } from '@/lib/types';
 
 const DEFAULT_KEYS: ApiKeys = { openai: '', gemini: '', claude: '' };
 
@@ -18,7 +18,6 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Load API keys from localStorage
   useEffect(() => {
     const saved = localStorage.getItem('ai-chat-keys');
     if (saved) setApiKeys(JSON.parse(saved));
@@ -28,33 +27,27 @@ export default function Home() {
     if (savedModel) setModel(savedModel);
   }, []);
 
-  // Load conversations
-  useEffect(() => {
-    fetchConversations();
-  }, []);
+  useEffect(() => { fetchConversations(); }, []);
 
-  // Load messages when conversation changes
   useEffect(() => {
-    if (activeConversationId) {
-      fetchMessages(activeConversationId);
-    } else {
-      setMessages([]);
-    }
+    if (activeConversationId) fetchMessages(activeConversationId);
+    else setMessages([]);
   }, [activeConversationId]);
 
   async function fetchConversations() {
     const res = await fetch('/api/conversations');
-    if (res.ok) {
-      const data = await res.json();
-      setConversations(data);
-    }
+    if (res.ok) setConversations(await res.json());
   }
 
   async function fetchMessages(conversationId: string) {
     const res = await fetch(`/api/conversations/${conversationId}`);
     if (res.ok) {
       const data = await res.json();
-      setMessages(data.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })));
+      // Messages loaded from DB have no images (images are transient)
+      setMessages(data.map((m: { role: string; content: string }) => ({
+        role: m.role,
+        content: m.content,
+      })));
     }
   }
 
@@ -75,10 +68,7 @@ export default function Home() {
   async function handleDeleteConversation(id: string) {
     await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
     setConversations(prev => prev.filter(c => c.id !== id));
-    if (activeConversationId === id) {
-      setActiveConversationId(null);
-      setMessages([]);
-    }
+    if (activeConversationId === id) { setActiveConversationId(null); setMessages([]); }
   }
 
   function handleSaveKeys(keys: ApiKeys, newProvider: Provider, newModel: string) {
@@ -91,10 +81,9 @@ export default function Home() {
     setShowSettings(false);
   }
 
-  async function handleSendMessage(content: string) {
+  async function handleSendMessage(content: string, images?: ImagePart[]) {
     let convId = activeConversationId;
 
-    // Auto-create conversation if none active
     if (!convId) {
       const res = await fetch('/api/conversations', { method: 'POST' });
       if (!res.ok) return;
@@ -104,25 +93,28 @@ export default function Home() {
       setActiveConversationId(conv.id);
     }
 
-    // Save user message to DB
+    // Persist user message text to DB (images are not stored)
     await fetch(`/api/conversations/${convId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role: 'user', content }),
     });
 
-    const newMessages: ChatMessage[] = [...messages, { role: 'user', content }];
-    setMessages(newMessages);
+    const userMsg: ChatMessage = { role: 'user', content, images };
+    const newMessages: ChatMessage[] = [...messages, userMsg];
+    setMessages([...newMessages, { role: 'assistant', content: '' }]);
 
-    // Add placeholder assistant message
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    // Strip images from previous messages to keep payload size sane
+    // (only the current message needs images; history is text-only)
+    const apiMessages = newMessages.map((m, i) =>
+      i === newMessages.length - 1 ? m : { role: m.role, content: m.content }
+    );
 
-    // Stream from AI
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: newMessages,
+        messages: apiMessages,
         provider,
         apiKey: apiKeys[provider],
         model,
@@ -148,7 +140,6 @@ export default function Home() {
       });
     }
 
-    // Refresh conversation list to get updated title
     fetchConversations();
   }
 
@@ -166,7 +157,6 @@ export default function Home() {
         onSettings={() => setShowSettings(true)}
         onToggle={() => setSidebarOpen(o => !o)}
       />
-
       <ChatInterface
         messages={messages}
         conversationTitle={activeConversation?.title ?? 'New Chat'}
@@ -179,7 +169,6 @@ export default function Home() {
         onSettings={() => setShowSettings(true)}
         onToggleSidebar={() => setSidebarOpen(o => !o)}
       />
-
       {showSettings && (
         <SettingsModal
           apiKeys={apiKeys}

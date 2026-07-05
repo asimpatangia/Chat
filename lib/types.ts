@@ -32,9 +32,16 @@ export interface UploadedFile {
   created_at: string;
 }
 
+export interface ImagePart {
+  base64: string;
+  mimeType: string; // e.g. "image/jpeg", "image/png"
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** Vision images — only present in in-memory state, not persisted to DB */
+  images?: ImagePart[];
 }
 
 export const MODEL_OPTIONS: Record<Provider, { label: string; models: string[] }> = {

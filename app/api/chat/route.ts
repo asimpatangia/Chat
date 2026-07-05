@@ -3,9 +3,75 @@ import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Anthropic from '@anthropic-ai/sdk';
 import { supabase } from '@/lib/supabase';
-import { Provider, ChatMessage } from '@/lib/types';
+import { Provider, ChatMessage, ImagePart } from '@/lib/types';
 
 export const runtime = 'edge';
+
+// ── Helper: build provider-specific message payloads ─────────────────────────
+
+function buildOpenAIMessages(messages: ChatMessage[]) {
+  return messages.map(m => {
+    if (m.images && m.images.length > 0) {
+      return {
+        role: m.role,
+        content: [
+          { type: 'text' as const, text: m.content },
+          ...m.images.map((img: ImagePart) => ({
+            type: 'image_url' as const,
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ],
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+function buildGeminiHistory(messages: ChatMessage[]) {
+  return messages.slice(0, -1).map(m => {
+    const parts: object[] = [{ text: m.content }];
+    if (m.images) {
+      m.images.forEach((img: ImagePart) => {
+        parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+      });
+    }
+    return { role: m.role === 'assistant' ? 'model' : 'user', parts };
+  });
+}
+
+function buildGeminiLastParts(msg: ChatMessage) {
+  const parts: object[] = [{ text: msg.content }];
+  if (msg.images) {
+    msg.images.forEach((img: ImagePart) => {
+      parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+    });
+  }
+  return parts;
+}
+
+function buildClaudeMessages(messages: ChatMessage[]) {
+  return messages.map(m => {
+    if (m.images && m.images.length > 0) {
+      return {
+        role: m.role,
+        content: [
+          ...m.images.map((img: ImagePart) => ({
+            type: 'image' as const,
+            source: {
+              type: 'base64' as const,
+              media_type: img.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+              data: img.base64,
+            },
+          })),
+          { type: 'text' as const, text: m.content },
+        ],
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+// ── Main handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const { messages, provider, apiKey, model, conversationId } = await req.json() as {
@@ -32,52 +98,40 @@ export async function POST(req: NextRequest) {
       try {
         if (provider === 'openai') {
           const client = new OpenAI({ apiKey });
-          const openaiMessages = messages.map(m => ({ role: m.role, content: m.content }));
-
           const response = await client.chat.completions.create({
             model,
-            messages: openaiMessages,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            messages: buildOpenAIMessages(messages) as any,
             stream: true,
           });
-
           for await (const chunk of response) {
             const text = chunk.choices[0]?.delta?.content ?? '';
-            if (text) {
-              fullContent += text;
-              controller.enqueue(encoder.encode(text));
-            }
+            if (text) { fullContent += text; controller.enqueue(encoder.encode(text)); }
           }
+
         } else if (provider === 'gemini') {
           const genAI = new GoogleGenerativeAI(apiKey);
           const geminiModel = genAI.getGenerativeModel({ model });
-
-          // Build history (all but last user message)
-          const history = messages.slice(0, -1).map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }],
-          }));
-          const lastMessage = messages[messages.length - 1];
-
+          const history = buildGeminiHistory(messages);
+          const lastMsg = messages[messages.length - 1];
+          const lastParts = buildGeminiLastParts(lastMsg);
           const chat = geminiModel.startChat({ history });
-          const result = await chat.sendMessageStream(lastMessage.content);
-
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await chat.sendMessageStream(lastParts as any);
           for await (const chunk of result.stream) {
             const text = chunk.text();
-            if (text) {
-              fullContent += text;
-              controller.enqueue(encoder.encode(text));
-            }
+            if (text) { fullContent += text; controller.enqueue(encoder.encode(text)); }
           }
+
         } else if (provider === 'claude') {
           const client = new Anthropic({ apiKey });
-
           const response = await client.messages.create({
             model,
             max_tokens: 4096,
-            messages: messages.map(m => ({ role: m.role, content: m.content })),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            messages: buildClaudeMessages(messages) as any,
             stream: true,
           });
-
           for await (const event of response) {
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               fullContent += event.delta.text;
@@ -86,7 +140,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Save assistant message to DB after streaming
+        // Persist assistant reply (text only — images are transient)
         if (conversationId && fullContent) {
           await supabase.from('messages').insert({
             conversation_id: conversationId,
@@ -94,10 +148,11 @@ export async function POST(req: NextRequest) {
             content: fullContent,
           });
 
-          // Auto-update conversation title from first user message if it's still "New Chat"
+          // Auto-title from first user message
           const firstUserMsg = messages.find(m => m.role === 'user');
           if (firstUserMsg && messages.length <= 2) {
-            const title = firstUserMsg.content.slice(0, 60) + (firstUserMsg.content.length > 60 ? '...' : '');
+            const title = firstUserMsg.content.slice(0, 60) +
+              (firstUserMsg.content.length > 60 ? '…' : '');
             await supabase
               .from('conversations')
               .update({ title })
