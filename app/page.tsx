@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Sidebar from '@/components/Sidebar';
 import ChatInterface from '@/components/ChatInterface';
 import SettingsModal from '@/components/SettingsModal';
@@ -17,17 +17,52 @@ export default function Home() {
   const [model, setModel] = useState('gpt-4o');
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [settingsSaved, setSettingsSaved] = useState(false);
 
+  const deviceIdRef = useRef<string>('');
+
+  // ── On mount: load device ID + settings ─────────────────────────────────────
   useEffect(() => {
+    // Get or generate a stable device ID in localStorage
+    let id = localStorage.getItem('ai-chat-device-id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('ai-chat-device-id', id);
+    }
+    deviceIdRef.current = id;
+
+    loadSettings(id);
+    fetchConversations();
+  }, []);
+
+  async function loadSettings(deviceId: string) {
+    // Try Supabase first (works across browser restarts, even if localStorage cleared)
+    try {
+      const res = await fetch(`/api/settings?deviceId=${deviceId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.apiKeys) {
+          setApiKeys(data.apiKeys);
+          setSettingsSaved(true);
+        }
+        if (data.provider) setProvider(data.provider as Provider);
+        if (data.model) setModel(data.model);
+        return; // success — don't fall through to localStorage
+      }
+    } catch {
+      // network error — fall back to localStorage
+    }
+
+    // localStorage fallback (covers offline / Supabase outage)
     const saved = localStorage.getItem('ai-chat-keys');
-    if (saved) setApiKeys(JSON.parse(saved));
+    if (saved) { setApiKeys(JSON.parse(saved)); setSettingsSaved(true); }
     const savedProvider = localStorage.getItem('ai-chat-provider') as Provider;
     if (savedProvider) setProvider(savedProvider);
     const savedModel = localStorage.getItem('ai-chat-model');
     if (savedModel) setModel(savedModel);
-  }, []);
+  }
 
-  useEffect(() => { fetchConversations(); }, []);
+  // ── Conversations ────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (activeConversationId) fetchMessages(activeConversationId);
@@ -43,10 +78,8 @@ export default function Home() {
     const res = await fetch(`/api/conversations/${conversationId}`);
     if (res.ok) {
       const data = await res.json();
-      // Messages loaded from DB have no images (images are transient)
       setMessages(data.map((m: { role: string; content: string }) => ({
-        role: m.role,
-        content: m.content,
+        role: m.role, content: m.content,
       })));
     }
   }
@@ -61,25 +94,62 @@ export default function Home() {
     }
   }
 
-  async function handleSelectConversation(id: string) {
-    setActiveConversationId(id);
-  }
-
   async function handleDeleteConversation(id: string) {
     await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
     setConversations(prev => prev.filter(c => c.id !== id));
     if (activeConversationId === id) { setActiveConversationId(null); setMessages([]); }
   }
 
-  function handleSaveKeys(keys: ApiKeys, newProvider: Provider, newModel: string) {
+  // ── Settings save ────────────────────────────────────────────────────────────
+
+  async function handleSaveKeys(keys: ApiKeys, newProvider: Provider, newModel: string) {
     setApiKeys(keys);
     setProvider(newProvider);
     setModel(newModel);
+    setSettingsSaved(true);
+
+    const settings = { apiKeys: keys, provider: newProvider, model: newModel };
+
+    // Always persist to localStorage (fast, offline-safe)
     localStorage.setItem('ai-chat-keys', JSON.stringify(keys));
     localStorage.setItem('ai-chat-provider', newProvider);
     localStorage.setItem('ai-chat-model', newModel);
+
+    // Also persist to Supabase (survives localStorage clears, browser data wipes)
+    if (deviceIdRef.current) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: deviceIdRef.current, settings }),
+        });
+      } catch {
+        // Supabase save failed — localStorage copy still works
+      }
+    }
+
     setShowSettings(false);
   }
+
+  async function handleForgetKeys() {
+    // Clear localStorage
+    localStorage.removeItem('ai-chat-keys');
+    localStorage.removeItem('ai-chat-provider');
+    localStorage.removeItem('ai-chat-model');
+
+    // Clear Supabase
+    if (deviceIdRef.current) {
+      try {
+        await fetch(`/api/settings?deviceId=${deviceIdRef.current}`, { method: 'DELETE' });
+      } catch { /* ignore */ }
+    }
+
+    setApiKeys(DEFAULT_KEYS);
+    setSettingsSaved(false);
+    setShowSettings(false);
+  }
+
+  // ── Send message ─────────────────────────────────────────────────────────────
 
   async function handleSendMessage(content: string, images?: ImagePart[]) {
     let convId = activeConversationId;
@@ -93,7 +163,6 @@ export default function Home() {
       setActiveConversationId(conv.id);
     }
 
-    // Persist user message text to DB (images are not stored)
     await fetch(`/api/conversations/${convId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -104,8 +173,7 @@ export default function Home() {
     const newMessages: ChatMessage[] = [...messages, userMsg];
     setMessages([...newMessages, { role: 'assistant', content: '' }]);
 
-    // Strip images from previous messages to keep payload size sane
-    // (only the current message needs images; history is text-only)
+    // Only send images on the most recent message (keep history lean)
     const apiMessages = newMessages.map((m, i) =>
       i === newMessages.length - 1 ? m : { role: m.role, content: m.content }
     );
@@ -152,7 +220,7 @@ export default function Home() {
         conversations={conversations}
         activeId={activeConversationId}
         onNew={handleNewChat}
-        onSelect={handleSelectConversation}
+        onSelect={setActiveConversationId}
         onDelete={handleDeleteConversation}
         onSettings={() => setShowSettings(true)}
         onToggle={() => setSidebarOpen(o => !o)}
@@ -174,7 +242,9 @@ export default function Home() {
           apiKeys={apiKeys}
           provider={provider}
           model={model}
+          settingsSaved={settingsSaved}
           onSave={handleSaveKeys}
+          onForget={handleForgetKeys}
           onClose={() => setShowSettings(false)}
         />
       )}
