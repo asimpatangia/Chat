@@ -18,6 +18,8 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  // Which providers have a key configured server-side (env var)
+  const [envProviders, setEnvProviders] = useState<Record<string, boolean>>({});
 
   const deviceIdRef = useRef<string>('');
 
@@ -33,6 +35,12 @@ export default function Home() {
 
     loadSettings(id);
     fetchConversations();
+
+    // Check which providers are pre-configured server-side
+    fetch('/api/provider-status')
+      .then(r => r.json())
+      .then(setEnvProviders)
+      .catch(() => {});
   }, []);
 
   async function loadSettings(deviceId: string) {
@@ -230,7 +238,7 @@ export default function Home() {
         conversationTitle={activeConversation?.title ?? 'New Chat'}
         provider={provider}
         model={model}
-        hasApiKey={!!apiKeys[provider]}
+        hasApiKey={!!envProviders[provider] || !!apiKeys[provider]}
         conversationId={activeConversationId}
         sidebarOpen={sidebarOpen}
         onSend={handleSendMessage}
@@ -243,6 +251,7 @@ export default function Home() {
           provider={provider}
           model={model}
           settingsSaved={settingsSaved}
+          envProviders={envProviders}
           onSave={handleSaveKeys}
           onForget={handleForgetKeys}
           onClose={() => setShowSettings(false)}

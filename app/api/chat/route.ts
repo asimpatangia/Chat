@@ -7,6 +7,15 @@ import { Provider, ChatMessage, ImagePart } from '@/lib/types';
 
 export const runtime = 'edge';
 
+// ── Resolve API key: env var takes priority, fall back to client-provided key ─
+
+function resolveApiKey(provider: Provider, clientKey: string): string {
+  if (provider === 'openai')  return process.env.OPENAI_API_KEY    || clientKey;
+  if (provider === 'gemini')  return process.env.GEMINI_API_KEY    || clientKey;
+  if (provider === 'claude')  return process.env.ANTHROPIC_API_KEY || clientKey;
+  return clientKey;
+}
+
 // ── Helper: build provider-specific message payloads ─────────────────────────
 
 function buildOpenAIMessages(messages: ChatMessage[]) {
@@ -74,7 +83,7 @@ function buildClaudeMessages(messages: ChatMessage[]) {
 // ── Main handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { messages, provider, apiKey, model, conversationId } = await req.json() as {
+  const { messages, provider, apiKey: clientKey, model, conversationId } = await req.json() as {
     messages: ChatMessage[];
     provider: Provider;
     apiKey: string;
@@ -82,8 +91,11 @@ export async function POST(req: NextRequest) {
     conversationId: string;
   };
 
+  // Prefer the server-side env var; fall back to whatever the client sent
+  const apiKey = resolveApiKey(provider, clientKey);
+
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: `No API key provided for ${provider}` }), {
+    return new Response(JSON.stringify({ error: `No API key configured for ${provider}. Add one in Settings or set the env var.` }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });

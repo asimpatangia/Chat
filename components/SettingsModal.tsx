@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { X, Eye, EyeOff, Key, CheckCircle, Trash2 } from 'lucide-react';
+import { X, Eye, EyeOff, Key, CheckCircle, Trash2, ShieldCheck, Lock } from 'lucide-react';
 import { ApiKeys, Provider, MODEL_OPTIONS } from '@/lib/types';
 
 interface Props {
@@ -9,21 +9,23 @@ interface Props {
   provider: Provider;
   model: string;
   settingsSaved: boolean;
+  envProviders: Record<string, boolean>;
   onSave: (keys: ApiKeys, provider: Provider, model: string) => void;
   onForget: () => void;
   onClose: () => void;
 }
 
-export default function SettingsModal({ apiKeys, provider, model, settingsSaved, onSave, onForget, onClose }: Props) {
+export default function SettingsModal({
+  apiKeys, provider, model, settingsSaved, envProviders,
+  onSave, onForget, onClose,
+}: Props) {
   const [keys, setKeys] = useState<ApiKeys>({ ...apiKeys });
   const [selectedProvider, setSelectedProvider] = useState<Provider>(provider);
   const [selectedModel, setSelectedModel] = useState(model);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [confirmForget, setConfirmForget] = useState(false);
 
-  function toggleShow(key: string) {
-    setShowKeys(prev => ({ ...prev, [key]: !prev[key] }));
-  }
+  const allEnvConfigured = Object.values(envProviders).every(Boolean);
 
   function handleProviderChange(p: Provider) {
     setSelectedProvider(p);
@@ -41,10 +43,9 @@ export default function SettingsModal({ apiKeys, provider, model, settingsSaved,
             <h2 className="font-semibold text-white">API Keys & Settings</h2>
           </div>
           <div className="flex items-center gap-2">
-            {settingsSaved && (
+            {settingsSaved && !allEnvConfigured && (
               <span className="flex items-center gap-1 text-xs text-[#10a37f]">
-                <CheckCircle size={13} />
-                Remembered
+                <CheckCircle size={13} /> Saved
               </span>
             )}
             <button onClick={onClose} className="p-1 rounded hover:bg-[#2f2f2f] text-gray-400 hover:text-white transition-colors">
@@ -55,6 +56,16 @@ export default function SettingsModal({ apiKeys, provider, model, settingsSaved,
 
         <div className="px-6 py-5 space-y-5">
 
+          {/* All env-configured banner */}
+          {allEnvConfigured && (
+            <div className="flex items-center gap-2.5 bg-[#10a37f]/10 border border-[#10a37f]/30 rounded-lg px-3 py-2.5">
+              <ShieldCheck size={16} className="text-[#10a37f] shrink-0" />
+              <p className="text-xs text-[#10a37f]">
+                All API keys are configured via server environment variables — no action needed.
+              </p>
+            </div>
+          )}
+
           {/* Provider selector */}
           <div>
             <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Active Provider</label>
@@ -63,16 +74,24 @@ export default function SettingsModal({ apiKeys, provider, model, settingsSaved,
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
-                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors ${
+                  className={`relative py-2 px-3 rounded-lg text-sm font-medium border transition-colors ${
                     selectedProvider === p
                       ? 'bg-[#10a37f] border-[#10a37f] text-white'
                       : 'border-[#3f3f3f] text-gray-400 hover:border-gray-500 hover:text-white'
                   }`}
                 >
                   {MODEL_OPTIONS[p].label}
+                  {envProviders[p] && (
+                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-[#10a37f] rounded-full flex items-center justify-center">
+                      <Lock size={7} className="text-white" />
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
+            <p className="text-[11px] text-gray-600 mt-1.5">
+              <Lock size={9} className="inline mb-0.5 mr-0.5" /> = key set via server environment variable
+            </p>
           </div>
 
           {/* Model */}
@@ -91,33 +110,57 @@ export default function SettingsModal({ apiKeys, provider, model, settingsSaved,
 
           {/* API Keys */}
           <div className="space-y-3">
-            <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">API Keys</label>
+            <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">
+              API Keys <span className="text-gray-600 normal-case font-normal">(optional if set as env vars)</span>
+            </label>
+
             {(Object.keys(MODEL_OPTIONS) as Provider[]).map(p => (
               <div key={p}>
-                <label className="block text-xs text-gray-500 mb-1">{MODEL_OPTIONS[p].label}</label>
-                <div className="relative">
-                  <input
-                    type={showKeys[p] ? 'text' : 'password'}
-                    placeholder={`Enter ${MODEL_OPTIONS[p].label} API key…`}
-                    value={keys[p]}
-                    onChange={e => setKeys(prev => ({ ...prev, [p]: e.target.value }))}
-                    className="w-full bg-[#2f2f2f] border border-[#3f3f3f] rounded-lg px-3 py-2 pr-10 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-[#10a37f] transition-colors"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleShow(p)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-                  >
-                    {showKeys[p] ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                </div>
+                <label className="block text-xs text-gray-500 mb-1 flex items-center gap-1">
+                  {MODEL_OPTIONS[p].label}
+                  {envProviders[p] && (
+                    <span className="flex items-center gap-0.5 text-[#10a37f]">
+                      <ShieldCheck size={11} /> Configured via environment
+                    </span>
+                  )}
+                </label>
+                {envProviders[p] ? (
+                  <div className="flex items-center gap-2 bg-[#1a2e1a] border border-[#10a37f]/30 rounded-lg px-3 py-2 text-xs text-[#10a37f]">
+                    <Lock size={12} />
+                    Key is set as a server environment variable — no need to enter it here.
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      type={showKeys[p] ? 'text' : 'password'}
+                      placeholder={`Enter ${MODEL_OPTIONS[p].label} API key…`}
+                      value={keys[p]}
+                      onChange={e => setKeys(prev => ({ ...prev, [p]: e.target.value }))}
+                      className="w-full bg-[#2f2f2f] border border-[#3f3f3f] rounded-lg px-3 py-2 pr-10 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-[#10a37f] transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKeys(prev => ({ ...prev, [p]: !prev[p] }))}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                    >
+                      {showKeys[p] ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
 
-            <p className="text-xs text-gray-600 flex items-center gap-1">
-              <CheckCircle size={11} className="text-[#10a37f]" />
-              Keys are saved to your browser and our database — they persist across sessions automatically.
-            </p>
+            {!allEnvConfigured && (
+              <div className="bg-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-gray-500 space-y-1">
+                <p className="font-medium text-gray-400">Tip: Set keys as Vercel environment variables for permanent storage</p>
+                <p>In Vercel → Settings → Environment Variables, add:</p>
+                <code className="block text-[10px] text-gray-400 mt-1 space-y-0.5">
+                  <span className="block">OPENAI_API_KEY = sk-...</span>
+                  <span className="block">GEMINI_API_KEY = AIza...</span>
+                  <span className="block">ANTHROPIC_API_KEY = sk-ant-...</span>
+                </code>
+              </div>
+            )}
           </div>
         </div>
 
@@ -134,35 +177,23 @@ export default function SettingsModal({ apiKeys, provider, model, settingsSaved,
               onClick={() => onSave(keys, selectedProvider, selectedModel)}
               className="flex-1 py-2 rounded-lg bg-[#10a37f] hover:bg-[#0d8a6a] text-white text-sm font-medium transition-colors"
             >
-              Save & Remember
+              Save
             </button>
           </div>
 
-          {/* Forget / delete saved keys */}
           {settingsSaved && !confirmForget && (
             <button
               onClick={() => setConfirmForget(true)}
               className="flex items-center justify-center gap-1.5 w-full py-1.5 text-xs text-gray-600 hover:text-red-400 transition-colors"
             >
-              <Trash2 size={12} />
-              Forget saved keys
+              <Trash2 size={12} /> Forget saved keys
             </button>
           )}
           {confirmForget && (
             <div className="flex items-center gap-2 bg-red-950/40 border border-red-800/40 rounded-lg px-3 py-2">
               <span className="text-xs text-red-300 flex-1">Delete all saved keys?</span>
-              <button
-                onClick={() => setConfirmForget(false)}
-                className="text-xs text-gray-400 hover:text-white px-2"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={onForget}
-                className="text-xs text-red-400 hover:text-red-300 font-medium px-2"
-              >
-                Delete
-              </button>
+              <button onClick={() => setConfirmForget(false)} className="text-xs text-gray-400 hover:text-white px-2">Cancel</button>
+              <button onClick={onForget} className="text-xs text-red-400 hover:text-red-300 font-medium px-2">Delete</button>
             </div>
           )}
         </div>
